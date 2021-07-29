@@ -1,6 +1,6 @@
 from torch.utils.data.sampler import Sampler
 import numpy as np
-from data.data_loader import SpectrogramDataset, load_audio
+from experiments.ml.specaugment.mlcommons.training.speech_recognition.data.data_loader import SpectrogramDataset, load_audio
 from collections import defaultdict
 
 

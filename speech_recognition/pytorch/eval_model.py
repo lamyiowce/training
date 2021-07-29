@@ -10,13 +10,12 @@ import sys
 ### Import Data Utils ###
 sys.path.append('../')
 
-from data.bucketing_sampler import BucketingSampler, SpectrogramDatasetWithLength
-from data.data_loader import AudioDataLoader, SpectrogramDataset
+from experiments.ml.specaugment.mlcommons.training.speech_recognition.data.bucketing_sampler import BucketingSampler, SpectrogramDatasetWithLength
+from experiments.ml.specaugment.mlcommons.training.speech_recognition.data.data_loader import AudioDataLoader, SpectrogramDataset
 from decoder import GreedyDecoder
 from model import DeepSpeech, supported_rnns
-from params import cuda
 
-def eval_model(model, test_loader, decoder):
+def eval_model(model, test_loader, decoder, params):
         start_iter = 0  # Reset start iteration for next epoch
         total_cer, total_wer = 0, 0
         model.eval()
@@ -32,7 +31,7 @@ def eval_model(model, test_loader, decoder):
                 split_targets.append(targets[offset:offset + size])
                 offset += size
 
-            if cuda:
+            if params.cuda:
                 inputs = inputs.cuda()
 
             out = model(inputs)
@@ -49,7 +48,7 @@ def eval_model(model, test_loader, decoder):
             total_cer += cer
             total_wer += wer
 
-            if cuda:
+            if params.cuda:
                 torch.cuda.synchronize()
             del out
         wer = total_wer / len(test_loader.dataset)

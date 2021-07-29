@@ -19,6 +19,8 @@ def load_audio(path):
     if len(sound.shape) > 1:
         if sound.shape[1] == 1:
             sound = sound.squeeze()
+        elif sound.shape[0] == 1:
+            sound = sound.squeeze(axis=0)
         else:
             sound = sound.mean(axis=1)  # multiple channels, average
     return sound
@@ -146,8 +148,8 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
         :param augment(default False):  Apply random tempo and gain perturbations
         """
         with open(manifest_filepath) as f:
-            ids = f.readlines()
-        ids = [x.strip().split(',') for x in ids]
+            ids = f.readlines()[1:100]
+        ids = [x.strip().split('\t') for x in ids]
         self.ids = ids
         self.size = len(ids)
         self.labels_map = dict([(labels[i], i) for i in range(len(labels))])
@@ -155,9 +157,10 @@ class SpectrogramDataset(Dataset, SpectrogramParser):
 
     def __getitem__(self, index):
         sample = self.ids[index]
-        audio_path, transcript_path = sample[0], sample[1]
+        audio_path, transcript = sample[0], sample[2]
         spect = self.parse_audio(audio_path)
-        transcript = self.parse_transcript(transcript_path)
+        transcript = list(filter(None, [self.labels_map.get(x) for x in transcript.upper()]))
+        # transcript = self.parse_transcript(transcript_path)
         return spect, transcript
 
     def parse_transcript(self, transcript_path):
@@ -264,6 +267,7 @@ def _collate_fn(batch):
     minibatch_size = len(batch)
     max_seqlength = longest_sample.size(1)
     inputs = torch.zeros(minibatch_size, 1, freq_size, max_seqlength)
+    # print("intpus will be of size:", inputs.size())
     input_percentages = torch.FloatTensor(minibatch_size)
     target_sizes = torch.IntTensor(minibatch_size)
     targets = []
@@ -276,6 +280,7 @@ def _collate_fn(batch):
         input_percentages[x] = seq_length / float(max_seqlength)
         target_sizes[x] = len(target)
         targets.extend(target)
+    # print(targets)
     targets = torch.IntTensor(targets)
     return inputs, targets, input_percentages, target_sizes
 
@@ -308,7 +313,7 @@ def augment_audio_with_sox(path, sample_rate, tempo, gain):
     """
     Changes tempo and gain of the recording with sox and loads it.
     """
-    with NamedTemporaryFile(suffix=".wav") as augmented_file:
+    with NamedTemporaryFile(suffix=".flac") as augmented_file:
         augmented_filename = augmented_file.name
         sox_augment_params = ["tempo", "{:.3f}".format(tempo), "gain", "{:.3f}".format(gain)]
         sox_params = "sox \"{}\" -r {} -c 1 -b 16 {} {} >/dev/null 2>&1".format(path, sample_rate,
