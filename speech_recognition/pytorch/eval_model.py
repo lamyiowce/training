@@ -22,7 +22,8 @@ def eval_model(model, test_loader, decoder, params):
         for i, (data) in enumerate(test_loader):  # test
             inputs, targets, input_percentages, target_sizes = data
 
-            inputs = Variable(inputs, volatile=True)
+            with torch.no_grad():
+                inputs = Variable(inputs, volatile=True)
 
             # unflatten targets
             split_targets = []

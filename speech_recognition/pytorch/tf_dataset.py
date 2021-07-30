@@ -64,7 +64,7 @@ class Vectorizer:
                 print(f"CHAR: '{ch}' (ascii: {ord(ch)}) not in dictionary.")
                 self.reported.add(ch)
 
-        return [self.char_to_idx.get(ch, 1) for ch in text] # + [0] * pad_len
+        return [self.char_to_idx.get(ch, 1) for ch in text]  # + [0] * pad_len
 
     def get_vocabulary(self):
         return self.vocab
@@ -162,12 +162,10 @@ class SnapshotDataset:
 
     def create_inputs(self, audio, indices):
         # Audio shape (None, 80)
-        print(audio.shape)
         audio = tf.transpose(audio)
         # Audio shape (None, 80)
-        print(audio.shape)
         audio = tf.reshape(audio, shape=[1, audio.shape[0], -1])
-        #Audio shape (1, 80, None)
+        # Audio shape (1, 80, None)
 
         input_length = tf.cast(tf.shape(audio)[0], tf.int32)
         print(audio.shape)
@@ -209,7 +207,8 @@ class SnapshotDataset:
             if stage == 'augment':
                 logger.info("Augmenting...")
                 dataset = dataset.map(
-                    lambda d: {"source": spec_augment(d["source"], **specaugment_config.as_dict()),
+                    lambda d: {"source": spec_augment(d["source"], time_warping_para=80, frequency_masking_para=27,
+                                                      time_masking_para=100),
                                "target": d["target"]},
                     num_parallel_calls=tf.data.experimental.AUTOTUNE)
             elif stage == 'snapshot':

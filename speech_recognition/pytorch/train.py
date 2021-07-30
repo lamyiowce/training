@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import errno
 import json
 import logging
@@ -52,7 +53,10 @@ parser.add_argument('--caching_period', help='Caching period. 0 for no caching, 
                     type=int, default=0)
 parser.add_argument('--repeat_single_batch', dest='repeat_single_batch', action='store_true')
 parser.add_argument('--params', dest='params', choices=['local', 'cloud'])
-
+parser.add_argument('--tag', help='additional tag.')
+parser.add_argument('--num_epochs', default=None, type=int)
+parser.add_argument('--bs', default=None, type=int)
+args = parser.parse_args()
 
 def to_np(x):
     return x.data.cpu().numpy()
@@ -61,6 +65,33 @@ def to_np(x):
 def tf_to_torch(tensor):
     return torch.from_numpy(tensor.numpy())
 
+def make_tag():
+    # tag = args.dataset + '-'
+    tag = ''
+    if args.caching_period == -1:
+        tag += 'cache-once-'
+    elif args.caching_period == 0:
+        tag += 'no-cache-'
+    else:
+        tag += f'cache-{args.caching_period}'
+
+    # tag += 'nomodel-' if args.no_model else ''
+    # tag += 'wav-' if args.wav else ''
+    tag += 'repeat-' if args.repeat_single_batch else ''
+    tag += f'bs_{args.bs}-' if args.bs else ''
+    tag += f'num_samples_{args.num_samples}-' if args.num_samples else ''
+
+    if args.pipeline:
+        tag += "-".join(args.pipeline)
+
+    if args.service_ip:
+        tag += 'service-'
+
+    if args.tag:
+        tag += args.tag
+
+    tag += '-' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return tag
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -84,7 +115,6 @@ class AverageMeter(object):
 def main():
     logger = tf.get_logger()
     logger.setLevel(logging.INFO)
-    args = parser.parse_args()
     if args.params == 'cloud':
         params = CloudParams
     elif args.params == 'local':
@@ -92,8 +122,11 @@ def main():
     else:
         raise ValueError(f"Illegal params config: {args.params}")
 
+    num_epochs = args.num_epochs or params.epochs
+    batch_size = args.bs or params.batch_size
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
+    tag = make_tag()
 
     if params.rnn_type == 'gru' and params.rnn_act_type != 'tanh':
         print("ERROR: GRU does not currently support activations other than tanh")
@@ -139,7 +172,7 @@ def main():
         train_dataset = SnapshotDataset(
             vectorizer=vectorizer,
             max_audio_len=max_audio_len,
-            data_paths=[params.train_manifest],
+            data_paths=params.train_manifest,
             drop_remainder=True,
             num_elems_to_load=args.num_samples,
             pipeline=args.pipeline,
@@ -149,11 +182,11 @@ def main():
             wav=args.wav,
             repeat_single_batch=args.repeat_single_batch,
         )
-        train_loader = train_dataset.create_tf_dataset(batch_size=params.batch_size)
+        train_loader = train_dataset.create_tf_dataset(batch_size=batch_size)
         test_dataset = SnapshotDataset(
             vectorizer=vectorizer,
             max_audio_len=max_audio_len,
-            data_paths=[params.val_manifest],
+            data_paths=params.val_manifest,
             drop_remainder=True,
             num_elems_to_load=args.num_samples,
             pipeline=args.pipeline,
@@ -163,16 +196,16 @@ def main():
             wav=args.wav,
             repeat_single_batch=args.repeat_single_batch,
         )
-        test_loader = test_dataset.create_tf_dataset(batch_size=params.batch_size)
+        test_loader = test_dataset.create_tf_dataset(batch_size=batch_size)
     else:
         train_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=params.train_manifest,
                                            labels=labels,
                                            normalize=True, augment=params.augment)
         test_dataset = SpectrogramDataset(audio_conf=audio_conf, manifest_filepath=params.val_manifest, labels=labels,
                                           normalize=True, augment=False)
-        train_loader = AudioDataLoader(train_dataset, batch_size=params.batch_size,
+        train_loader = AudioDataLoader(train_dataset, batch_size=batch_size,
                                        num_workers=4)
-        test_loader = AudioDataLoader(test_dataset, batch_size=params.batch_size,
+        test_loader = AudioDataLoader(test_dataset, batch_size=batch_size,
                                       num_workers=4)
 
     rnn_type = params.rnn_type.lower()
@@ -231,9 +264,14 @@ def main():
     losses = AverageMeter()
     ctc_time = AverageMeter()
 
-    for epoch in range(start_epoch, params.epochs):
+    logdir = os.path.join('./logs', tag)
+    file_writer = tf.summary.create_file_writer(logdir)
+    file_writer.set_as_default()
+
+    for epoch in range(start_epoch, num_epochs):
         model.train()
         end = time.time()
+        epoch_start = time.time()
         for i, (data) in enumerate(train_loader, start=start_iter):
             if i == len(train_loader):
                 break
@@ -275,6 +313,7 @@ def main():
             sizes = Variable(input_percentages.mul_(int(seq_length)).int(), requires_grad=False)
 
             ctc_start_time = time.time()
+            print(inputs.device, targets.device, sizes.device, target_sizes.device)
             loss = criterion(out, targets, sizes, target_sizes)
             ctc_time.update(time.time() - ctc_start_time)
 
@@ -283,8 +322,9 @@ def main():
             loss_sum = loss.data.sum()
             inf = float("inf")
             if loss_sum == inf or loss_sum == -inf:
-                print("WARNING: received an inf loss, setting loss value to 0")
+                print("ERROR: received an inf loss, setting loss value to 0")
                 loss_value = 0
+                return
             else:
                 loss_value = loss.data[0]
 
@@ -317,11 +357,16 @@ def main():
             del loss
             del out
 
+        epoch_end = time.time()
+
         avg_loss /= len(train_loader)
 
         print('Training Summary Epoch: [{0}]\t'
               'Average Loss {loss:.3f}\t'
               .format(epoch + 1, loss=avg_loss, ))
+
+        tf.summary.scalar('epoch train time', data=epoch_end-epoch_start, step=epoch+1)
+        tf.summary.scalar('avg_loss', data=avg_loss, step=epoch+1)
 
         start_iter = 0  # Reset start iteration for next epoch
         total_cer, total_wer = 0, 0
@@ -336,6 +381,10 @@ def main():
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(
             epoch + 1, wer=wer, cer=cer))
+
+        tf.summary.scalar('WER dev-clean', data=wer, step=epoch+1)
+        tf.summary.scalar('CER dev-clean', data=wer, step=epoch+1)
+
 
         if args.checkpoint:
             file_path = '%s/deepspeech_%d.pth.tar' % (save_folder, epoch + 1)
@@ -362,7 +411,7 @@ def main():
             break
 
     print("=======================================================")
-    print("***Best WER = ", x)
+    print("***Best WER = ", best_wer)
     for arg in vars(args):
         print("***%s = %s " % (arg.ljust(25), getattr(args, arg)))
     print("=======================================================")

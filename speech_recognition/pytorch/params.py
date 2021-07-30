@@ -46,7 +46,7 @@ class LocalParams(BaseParams):
 
 class CloudParams(BaseParams):
     train_manifest = ['/training-data-speech/LibriSpeech/wav/train_transcripts.tsv']
-    val_manifest = ['/home/julia/lab/librispeech/transcripts-dev-clean.tsv']
+    val_manifest = ['/training-data-speech/LibriSpeech/wav/dev_clean_transcripts.tsv']
     # Platform parameters
     cuda = True
 
