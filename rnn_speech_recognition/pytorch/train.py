@@ -34,6 +34,7 @@ from common.helpers import (Checkpointer, greedy_wer, num_weights, print_once,
                             process_evaluation_epoch)
 from common.optimizers import lr_policy
 from common.tb_dllogger import flush_log, init_log, log
+from experiments.ml.specaugment.mlcommons.training.rnn_speech_recognition.pytorch.tf_dataset import TfDataset
 from rnnt import config
 from rnnt.decoder import RNNTGreedyDecoder
 from rnnt.loss import RNNTLoss
@@ -133,6 +134,13 @@ def parse_args():
                     help='Path to save the training logfile.')
     io.add_argument('--max_symbol_per_sample', type=int, default=None,
                     help='maximum number of symbols per sample can have during eval')
+
+    io.add_argument('--tf_data', action='store_true', default=False,
+                          help='Use tf.data for input pipeline.')
+    io.add_argument('--tf_train_manifests', type=str, required=True, nargs='+',
+                    help='Paths of the training dataset manifest file')
+    io.add_argument('--tf_val_manifests', type=str, required=True, nargs='+',
+                    help='Paths of the evaluation datasets manifest files')
     return parser.parse_args()
 
 
@@ -147,7 +155,7 @@ def apply_ema(model, ema_model, decay):
 
 @torch.no_grad()
 def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
-             ema_model, loss_fn, greedy_decoder, use_amp):
+             ema_model, loss_fn, greedy_decoder, use_amp, use_tf_data):
 
     ema_model.eval()
 
@@ -155,10 +163,14 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
     agg = {'losses': [], 'preds': [], 'txts': [], 'idx': []}
     logging.log_start(logging.constants.EVAL_START, metadata=dict(epoch_num=epoch))
     for i, batch in enumerate(val_loader):
-        print(f'{val_loader.pipeline_type} evaluation: {i:>10}/{len(val_loader):<10}', end='\r')
+        print(f'Val evaluation: {i:>10}/{len(val_loader):<10}', end='\r')
 
         audio, audio_lens, txt, txt_lens = batch
-
+        if use_tf_data:
+            audio = tf_to_torch(audio).cuda()
+            txt = tf_to_torch(txt).cuda()
+            audio_lens = tf_to_torch(audio_lens).cuda()
+            txt_lens = tf_to_torch(txt_lens).cuda()
         feats, feat_lens = val_feat_proc([audio, audio_lens])
 
         log_probs, log_prob_lens = ema_model(feats, feat_lens, txt, txt_lens)
@@ -180,6 +192,8 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
     ema_model.train()
     return wer
 
+def tf_to_torch(tensor):
+    return torch.from_numpy(tensor.numpy())
 
 def main():
     logging.configure_logger('RNNT')
@@ -227,10 +241,10 @@ def main():
     logging.log_event(logging.constants.SUBMISSION_PLATFORM, value='my platform')
 
     logging.log_end(logging.constants.INIT_STOP)
-    if multi_gpu:
+    if multi_gpu and not args.tf_data:
         torch.distributed.barrier()
     logging.log_start(logging.constants.RUN_START)
-    if multi_gpu:
+    if multi_gpu and not args.tf_data:
         torch.distributed.barrier()
 
     print_once('Setting up datasets...')
@@ -274,44 +288,67 @@ def main():
     class PermuteAudio(torch.nn.Module):
         def forward(self, x):
             return (x[0].permute(2, 0, 1), *x[1:])
-
-    train_augmentations = torch.nn.Sequential(
-        train_specaugm_kw and features.SpecAugment(optim_level=args.amp, **train_specaugm_kw) or torch.nn.Identity(),
-        features.FrameSplicing(optim_level=args.amp, **train_splicing_kw),
-        PermuteAudio(),
-    )
-    val_augmentations = torch.nn.Sequential(
-        val_specaugm_kw and features.SpecAugment(optim_level=args.amp, **val_specaugm_kw) or torch.nn.Identity(),
-        features.FrameSplicing(optim_level=args.amp, **val_splicing_kw),
-        PermuteAudio(),
-    )
-
-    logging.log_event(logging.constants.DATA_TRAIN_NUM_BUCKETS, value=args.num_buckets)
-
-    if args.num_buckets is not None:
-        sampler = dali_sampler.BucketingSampler(
-            args.num_buckets,
-            batch_size,
-            world_size,
-            args.epochs,
-            np_rng
-        )
+    if args.tf_data:
+        train_dataset = TfDataset(pipeline=['augment'], caching_period=0,
+                                 dataset_path=args.dataset_dir,
+                                 manifests_paths=args.tf_train_manifests,
+                                 tokenizer=tokenizer,
+                                 config_data=train_dataset_kw,
+                                 config_features=train_features_kw,
+                                 batch_size=batch_size,
+                                 # grad_accumulation_steps=args.grad_accumulation_steps,
+                                 )
+        train_loader = train_dataset.create_tf_dataset()
+        val_dataset = TfDataset(pipeline=[], caching_period=0,
+                               dataset_path=args.dataset_dir,
+                               manifests_paths=args.tf_val_manifests,
+                               tokenizer=tokenizer,
+                               config_data=train_dataset_kw,
+                               config_features=train_features_kw,
+                               batch_size=batch_size,
+                               # grad_accumulation_steps=args.grad_accumulation_steps,
+                               )
+        val_loader = val_dataset.create_tf_dataset()
+        train_feat_proc = PermuteAudio()
+        val_feat_proc   = PermuteAudio()
     else:
-        sampler = dali_sampler.SimpleSampler()
+        train_augmentations = torch.nn.Sequential(
+            train_specaugm_kw and features.SpecAugment(optim_level=args.amp, **train_specaugm_kw) or torch.nn.Identity(),
+            features.FrameSplicing(optim_level=args.amp, **train_splicing_kw),
+            PermuteAudio(),
+            )
+        val_augmentations = torch.nn.Sequential(
+            val_specaugm_kw and features.SpecAugment(optim_level=args.amp, **val_specaugm_kw) or torch.nn.Identity(),
+            features.FrameSplicing(optim_level=args.amp, **val_splicing_kw),
+            PermuteAudio(),
+            )
 
-    train_loader = DaliDataLoader(gpu_id=args.local_rank,
-                                  dataset_path=args.dataset_dir,
-                                  config_data=train_dataset_kw,
-                                  config_features=train_features_kw,
-                                  json_names=args.train_manifests,
-                                  batch_size=batch_size,
-                                  sampler=sampler,
-                                  grad_accumulation_steps=args.grad_accumulation_steps,
-                                  pipeline_type="train",
-                                  device_type=args.dali_device,
-                                  tokenizer=tokenizer)
+        logging.log_event(logging.constants.DATA_TRAIN_NUM_BUCKETS, value=args.num_buckets)
 
-    val_loader = DaliDataLoader(gpu_id=args.local_rank,
+        if args.num_buckets is not None:
+            sampler = dali_sampler.BucketingSampler(
+                args.num_buckets,
+                batch_size,
+                world_size,
+                args.epochs,
+                np_rng
+            )
+        else:
+            sampler = dali_sampler.SimpleSampler()
+
+        train_loader = DaliDataLoader(gpu_id=args.local_rank,
+                                      dataset_path=args.dataset_dir,
+                                      config_data=train_dataset_kw,
+                                      config_features=train_features_kw,
+                                      json_names=args.train_manifests,
+                                      batch_size=batch_size,
+                                      sampler=sampler,
+                                      grad_accumulation_steps=args.grad_accumulation_steps,
+                                      pipeline_type="train",
+                                      device_type=args.dali_device,
+                                      tokenizer=tokenizer)
+
+        val_loader = DaliDataLoader(gpu_id=args.local_rank,
                                     dataset_path=args.dataset_dir,
                                     config_data=val_dataset_kw,
                                     config_features=val_features_kw,
@@ -322,16 +359,21 @@ def main():
                                     device_type=args.dali_device,
                                     tokenizer=tokenizer)
 
-    train_feat_proc = train_augmentations
-    val_feat_proc   = val_augmentations
+        train_feat_proc = train_augmentations
+        val_feat_proc   = val_augmentations
 
     train_feat_proc.cuda()
     val_feat_proc.cuda()
 
+
     steps_per_epoch = len(train_loader) // args.grad_accumulation_steps
 
-    logging.log_event(logging.constants.TRAIN_SAMPLES, value=train_loader.dataset_size)
-    logging.log_event(logging.constants.EVAL_SAMPLES, value=val_loader.dataset_size)
+    if not args.tf_data:
+        logging.log_event(logging.constants.TRAIN_SAMPLES, value=train_loader.dataset_size)
+        logging.log_event(logging.constants.EVAL_SAMPLES, value=val_loader.dataset_size)
+    else:
+        logging.log_event(logging.constants.TRAIN_SAMPLES, value=len(train_dataset))
+        logging.log_event(logging.constants.EVAL_SAMPLES, value=len(val_dataset))
 
     # set up the model
     rnnt_config = config.rnnt(cfg)
@@ -393,7 +435,10 @@ def main():
     logging.log_event(logging.constants.MODEL_EVAL_EMA_FACTOR, value=args.ema)
 
     if multi_gpu:
-        model = DistributedDataParallel(model)
+        if args.tf_data:
+            model = torch.nn.DataParallel(model)
+        else:
+            model = DistributedDataParallel(model)
 
     # load checkpoint
     meta = {'best_wer': 10**6, 'start_epoch': 0}
@@ -424,6 +469,7 @@ def main():
         epoch_utts = 0
         accumulated_batches = 0
         epoch_start_time = time.time()
+        all_feat_lens = []
 
         for batch in train_loader:
 
@@ -435,13 +481,25 @@ def main():
                 all_feat_lens = []
 
             audio, audio_lens, txt, txt_lens = batch
+            if args.tf_data:
+                audio = tf_to_torch(audio).cuda()
+                txt = tf_to_torch(txt).cuda()
+                audio_lens = tf_to_torch(audio_lens).cuda()
+                txt_lens = tf_to_torch(txt_lens).cuda()
 
+            # Audio: [BATCH_SIZE, NUM_FEATURES (80), MAX_LEN]
+            # Text: [BATCH_SIZE, MAX_LEN_TEXT]
+            # print(audio.shape, audio_lens.shape, txt.shape, txt_lens.shape)
+            # print(audio)
+            # print(audio_lens)
+            # print(tokenizer.detokenize(txt[0][:txt_lens[0]].cpu().numpy().tolist()))
             feats, feat_lens = train_feat_proc([audio, audio_lens])
+            # print(feats.shape, feat_lens.shape, txt.shape, txt_lens.shape)
             all_feat_lens += feat_lens
 
             log_probs, log_prob_lens = model(feats, feat_lens, txt, txt_lens)
             loss = loss_fn(log_probs[:, :log_prob_lens.max().item()],
-                                      log_prob_lens, txt, txt_lens)
+                           log_prob_lens, txt, txt_lens)
 
             loss /= args.grad_accumulation_steps
 
@@ -457,8 +515,8 @@ def main():
                     loss.backward()
                 loss_item = loss.item()
                 del loss
-                step_utts += batch[0].size(0) * world_size
-                epoch_utts += batch[0].size(0) * world_size
+                step_utts += batch[0].shape[0] * world_size
+                epoch_utts += batch[0].shape[0] * world_size
                 accumulated_batches += 1
 
             if accumulated_batches % args.grad_accumulation_steps == 0:
@@ -522,7 +580,7 @@ def main():
         if epoch % args.val_frequency == 0:
             wer = evaluate(epoch, step, val_loader, val_feat_proc,
                            tokenizer.detokenize, ema_model, loss_fn,
-                           greedy_decoder, args.amp)
+                           greedy_decoder, args.amp, args.tf_data)
 
             last_wer = wer
             if wer < best_wer and epoch >= args.save_best_from:

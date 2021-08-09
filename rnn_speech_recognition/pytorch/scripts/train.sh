@@ -16,9 +16,9 @@
 
 export OMP_NUM_THREADS=1
 
-: ${DATA_DIR:=${1:-"/datasets/LibriSpeech"}}
+: ${DATA_DIR:=${1:-"/home/julia/lab/librispeech/LibriSpeech/wav"}}
 : ${MODEL_CONFIG:=${2:-"configs/baseline_v3-1023sp.yaml"}}
-: ${OUTPUT_DIR:=${3:-"/results"}}
+: ${OUTPUT_DIR:=${3:-"./results"}}
 : ${CHECKPOINT:=${4:-}}
 : ${CUDNN_BENCHMARK:=true}
 : ${NUM_GPUS:=8}
@@ -43,10 +43,10 @@ export OMP_NUM_THREADS=1
 : ${BETA1:=0.9}
 : ${BETA2:=0.999}
 : ${LOG_FREQUENCY:=1}
-: ${TRAIN_MANIFESTS:="$DATA_DIR/librispeech-train-clean-100-wav.json \
-                      $DATA_DIR/librispeech-train-clean-360-wav.json \
-                      $DATA_DIR/librispeech-train-other-500-wav.json"}
-: ${VAL_MANIFESTS:="$DATA_DIR/librispeech-dev-clean-wav.json"}
+: ${TRAIN_MANIFESTS:="/home/julia/lab/librispeech/LibriSpeech/train-clean-100-wav.json"}
+: ${VAL_MANIFESTS:="/home/julia/lab/librispeech/LibriSpeech/librispeech-dev-clean-wav.json"}
+: ${TF_TRAIN_MANIFESTS:="/home/julia/lab/librispeech/transcripts-train-clean-100-wav.tsv"}
+: ${TF_VAL_MANIFESTS:="/home/julia/lab/librispeech/transcripts-dev-clean-wav.tsv"}
 : ${LOG_NORM:=false}
 : ${USE_OLD_VAL:=true}
 : ${USE_NEW_VAL:=false}
@@ -61,6 +61,8 @@ mkdir -p "$OUTPUT_DIR"
 ARGS="--dataset_dir=$DATA_DIR"
 ARGS+=" --val_manifests $VAL_MANIFESTS"
 ARGS+=" --train_manifests $TRAIN_MANIFESTS"
+ARGS+=" --tf_val_manifests $TF_VAL_MANIFESTS"
+ARGS+=" --tf_train_manifests $TF_TRAIN_MANIFESTS"
 ARGS+=" --model_config=$MODEL_CONFIG"
 ARGS+=" --output_dir=$OUTPUT_DIR"
 ARGS+=" --lr=$LEARNING_RATE"
@@ -100,5 +102,5 @@ ARGS+=" --beta2=$BETA2"
 [ -n "$WEIGHTS_INIT_SCALE" ] &&      ARGS+=" --weights_init_scale=$WEIGHTS_INIT_SCALE"
 [ -n "$MAX_SYMBOL_PER_SAMPLE" ] &&  ARGS+=" --max_symbol_per_sample=$MAX_SYMBOL_PER_SAMPLE"
 
-DISTRIBUTED=${DISTRIBUTED:-"-m torch.distributed.launch --nproc_per_node=$NUM_GPUS"}
-python ${DISTRIBUTED} train.py ${ARGS}
+#DISTRIBUTED=${DISTRIBUTED:-"-m torch.distributed.launch --nproc_per_node=$NUM_GPUS"}
+python3 train.py ${ARGS} --tf_data
