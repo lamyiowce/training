@@ -16,22 +16,22 @@
 
 export OMP_NUM_THREADS=1
 
-: ${DATA_DIR:=${1:-"/home/julia/lab/librispeech/LibriSpeech/wav"}}
-: ${MODEL_CONFIG:=${2:-"configs/baseline_v3-1023sp.yaml"}}
+: ${DATA_DIR:=${1:-"/training-data-speech/LibriSpeech/wav"}}
+: ${MODEL_CONFIG:=${2:-"configs/cloud.yaml"}}
 : ${OUTPUT_DIR:=${3:-"./results"}}
 : ${CHECKPOINT:=${4:-}}
 : ${CUDNN_BENCHMARK:=true}
-: ${NUM_GPUS:=1}
+: ${NUM_GPUS:=8}
 : ${AMP:=false}
-: ${GLOBAL_BATCH_SIZE:=4}
-: ${VAL_BATCH_SIZE:=2}
-: ${GRAD_ACCUMULATION_STEPS:=2}
+: ${GLOBAL_BATCH_SIZE:=256}
+: ${VAL_BATCH_SIZE:=64}
+: ${GRAD_ACCUMULATION_STEPS:=8}
 : ${LEARNING_RATE:=0.004}
 : ${LR_EXP_GAMMA:=0.935}  # ~0.005 in 80 epochs
 : ${NUM_BUCKETS=6} # empty means to use torch.utils.data.distributed.DistributedSampler
 : ${EMA:=0.999}
 : ${SEED=1}
-: ${EPOCHS:=1}
+: ${EPOCHS:=100}
 : ${WARMUP_EPOCHS:=6}  # 8000 steps with 1x8x24 should be ~5.6 epochs
 : ${HOLD_EPOCHS:=40}
 : ${SAVE_AT_THE_END:=false}
@@ -43,10 +43,12 @@ export OMP_NUM_THREADS=1
 : ${BETA1:=0.9}
 : ${BETA2:=0.999}
 : ${LOG_FREQUENCY:=1}
-: ${TRAIN_MANIFESTS:="/home/julia/lab/librispeech/LibriSpeech/train-clean-100-wav.json"}
-: ${VAL_MANIFESTS:="/home/julia/lab/librispeech/LibriSpeech/librispeech-dev-clean-wav.json"}
-: ${TF_TRAIN_MANIFESTS:="/home/julia/lab/librispeech/transcripts-train-clean-100-wav.tsv"}
-: ${TF_VAL_MANIFESTS:="/home/julia/lab/librispeech/transcripts-dev-clean-wav.tsv"}
+: ${TRAIN_MANIFESTS:="/training-data-speech/LibriSpeech/train-clean-100-wav.json"}
+: ${VAL_MANIFESTS:="/training-data-speech/LibriSpeech/librispeech-dev-clean-wav.json"}
+: ${TF_TRAIN_MANIFESTS:="/training-data-speech/LibriSpeech/wav/train_transcripts.tsv"}
+#                      /training-data-speech/LibriSpeech/librispeech-train-clean-360-wav.json \
+#                      /training-data-speech/LibriSpeech/librispeech-train-other-500-wav.json"}
+: ${TF_VAL_MANIFESTS:="/training-data-speech/LibriSpeech/wav/dev_clean_transcripts.tsv"}
 : ${LOG_NORM:=false}
 : ${USE_OLD_VAL:=true}
 : ${USE_NEW_VAL:=false}
@@ -54,7 +56,7 @@ export OMP_NUM_THREADS=1
 : ${WEIGHTS_INIT_SCALE=0.5}
 : ${CLIP_NORM:=1}
 
-BATCH_SIZE=$(( $GLOBAL_BATCH_SIZE / $NUM_GPUS ))
+#BATCH_SIZE=$(( $GLOBAL_BATCH_SIZE / $NUM_GPUS ))
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -66,7 +68,7 @@ ARGS+=" --tf_train_manifests $TF_TRAIN_MANIFESTS"
 ARGS+=" --model_config=$MODEL_CONFIG"
 ARGS+=" --output_dir=$OUTPUT_DIR"
 ARGS+=" --lr=$LEARNING_RATE"
-ARGS+=" --batch_size=$BATCH_SIZE"
+ARGS+=" --batch_size=$GLOBAL_BATCH_SIZE"
 ARGS+=" --val_batch_size=$VAL_BATCH_SIZE"
 ARGS+=" --min_lr=1e-5"
 ARGS+=" --lr_exp_gamma=$LR_EXP_GAMMA"
@@ -102,5 +104,9 @@ ARGS+=" --beta2=$BETA2"
 [ -n "$WEIGHTS_INIT_SCALE" ] &&      ARGS+=" --weights_init_scale=$WEIGHTS_INIT_SCALE"
 [ -n "$MAX_SYMBOL_PER_SAMPLE" ] &&  ARGS+=" --max_symbol_per_sample=$MAX_SYMBOL_PER_SAMPLE"
 
-DISTRIBUTED=${DISTRIBUTED:-"-m torch.distributed.launch --nproc_per_node=$NUM_GPUS"}
-python3 ${DISTRIBUTED} train.py ${ARGS} --tf_data
+#DISTRIBUTED=${DISTRIBUTED:-"-m torch.distributed.launch --nproc_per_node=$NUM_GPUS"}
+SNAPSHOT_PATH=/training-data-speech/snapshot
+#python3 train.py ${ARGS} --tf_data --log_file ./train-repeat_single_batch.log --repeat_single_batch --pipeline augment
+python3 train.py ${ARGS} --tf_data --log_file ./train-augment.log --pipeline augment --sort
+#python3 train.py ${ARGS} --tf_data --log_file ./train-snapshot.log --caching_period -1 --pipeline snapshot --snapshot_path $SNAPSHOT_PATH
+#python3 train.py ${ARGS} --tf_data --log_file ./train-snapshot-augment.log --caching_period -1 --pipeline snapshot augment --snapshot_path $SNAPSHOT_PATH
