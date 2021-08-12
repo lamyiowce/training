@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
-import os
 
 import numpy as np
 import tensorflow as tf
@@ -62,6 +61,7 @@ class TfDataset:
                  repeat_single_batch=False,
                  even_batches=False,
                  drop_remainder=False,
+                 sort=False,
                  ):
         self.dataset_path = dataset_path
         self.manifests_paths = manifests_paths
@@ -78,6 +78,7 @@ class TfDataset:
         self.wav = wav
         self.even_batches = even_batches
         self.batch_size = batch_size
+        self.sort = sort
 
         self.max_duration_seconds = config_data['max_duration']
 
@@ -106,23 +107,29 @@ class TfDataset:
         for i, line in enumerate(self.entries):
             self.entries[i][-1] = " ".join([str(x) for x in self.tokenizer.tokenize(line[-1])])
         self.entries = np.array(self.entries)
+        if self.sort:
+            durs = self.entries[:, 1].astype('f')
+            ord = np.argsort(-durs)
+            self.entries = self.entries[ord, :]
         self.total_steps = len(self.entries)
 
-    @staticmethod
-    def load(record: tf.Tensor):
-        import tensorflow_io as tfio
-        path = record[0]
-        audio = tfio.audio.AudioIOTensor(path, dtype=tf.int16)
-        audio = tf.cast(audio.to_tensor(), tf.float32) / 32768.0
-        audio = tf.squeeze(audio, axis=-1)  # Make shape (LEN,)
-        return audio, record[2]
+    # @staticmethod
+    # def load(record: tf.Tensor):
+    #     import tensorflow_io as tfio
+    #     path = record[0]
+    #     audio = tfio.audio.AudioIOTensor(path, dtype=tf.int16)
+    #     audio = tf.cast(audio.to_tensor(), tf.float32) / 32768.0
+    #     audio = tf.squeeze(audio, axis=-1)  # Make shape (LEN,)
+    #     return audio, record[2]
 
+    @tf.function
     def load_wav(self, record: tf.Tensor):
         path = record[0]
-        audio, _rate = tf.audio.decode_wav(tf.io.read_file(os.path.join(self.dataset_path, path)))
+        audio, _rate = tf.audio.decode_wav(tf.io.read_file(path))
         audio = tf.squeeze(audio, axis=-1)  # Make shape (LEN,)
         return audio, record[2]
 
+    @tf.function
     def _preprocess_audio(self, audio: tf.Tensor):
         # Preprocessing hyperparameters from Lingvo:
         # https://github.com/tensorflow/lingvo/blob/master/lingvo/tools/audio_lib.py
@@ -191,7 +198,8 @@ class TfDataset:
         if self.wav:
             dataset = dataset.map(self.load_wav, num_parallel_calls=tf.data.AUTOTUNE)
         else:
-            dataset = dataset.map(self.load, num_parallel_calls=tf.data.AUTOTUNE)
+            raise NotImplementedError
+            # dataset = dataset.map(self.load, num_parallel_calls=tf.data.AUTOTUNE)
         dataset = dataset.map(lambda audio, transcript: (self._preprocess_audio(audio), transcript),
                               num_parallel_calls=tf.data.AUTOTUNE)
         # dataset = dataset.map(lambda audio, transcript: (audio, self.vectorizer.parse_transcript(transcript)),
@@ -234,7 +242,7 @@ class TfDataset:
                 padded_shapes=(
                     # tf.TensorShape([257, None]),  # Audio
                     # tf.TensorShape([self.nfeatures, None]),  # Audio
-                    tf.TensorShape([None, None]),  # Audio
+                    tf.TensorShape([240, None]),  # Audio
                     tf.TensorShape([]),  # Input len
                     tf.TensorShape([None]),  # Label
                     tf.TensorShape([]),  # Label len
@@ -255,8 +263,8 @@ class TfDataset:
                 ))
 
             if self.repeat_single_batch:
-                num_batches = len(self.entries) // self.batch_size
-                dataset = dataset.take(1).cache().repeat(num_batches)
+
+                dataset = dataset.take(1).cache().repeat(200)
                 # batch = next(iter(dataset))
                 # logger.info(f"BATCH SHAPE: {batch[0].shape}, {batch[1].shape}, NUM BATCHES: {num_batches}")
             # PREFETCH to improve speed of input length

@@ -18,29 +18,28 @@ import os
 import random
 import time
 
-import torch
 import numpy as np
+import torch
 import torch.distributed as dist
 from apex import amp
 from apex.optimizers import FusedLAMB
 from apex.parallel import DistributedDataParallel
 
 from common import helpers
+from common.data import features
 from common.data.dali import sampler as dali_sampler
 from common.data.dali.data_loader import DaliDataLoader
 from common.data.text import Tokenizer
-from common.data import features
 from common.helpers import (Checkpointer, greedy_wer, num_weights, print_once,
                             process_evaluation_epoch)
 from common.optimizers import lr_policy
 from common.tb_dllogger import flush_log, init_log, log
 from experiments.ml.specaugment.mlcommons.training.rnn_speech_recognition.pytorch.tf_dataset import TfDataset
+from mlperf import logging
 from rnnt import config
 from rnnt.decoder import RNNTGreedyDecoder
 from rnnt.loss import RNNTLoss
 from rnnt.model import RNNT
-
-from mlperf import logging
 
 
 def parse_args():
@@ -135,12 +134,30 @@ def parse_args():
     io.add_argument('--max_symbol_per_sample', type=int, default=None,
                     help='maximum number of symbols per sample can have during eval')
 
-    io.add_argument('--tf_data', action='store_true', default=False,
-                          help='Use tf.data for input pipeline.')
-    io.add_argument('--tf_train_manifests', type=str, required=True, nargs='+',
+    tfdata = parser.add_argument_group('tfdata')
+    tfdata.add_argument('--tf_data', action='store_true', default=False,
+                    help='Use tf.data for input pipeline.')
+    tfdata.add_argument('--tf_train_manifests', type=str, required=True, nargs='+',
                     help='Paths of the training dataset manifest file')
-    io.add_argument('--tf_val_manifests', type=str, required=True, nargs='+',
+    tfdata.add_argument('--tf_val_manifests', type=str, required=True, nargs='+',
                     help='Paths of the evaluation datasets manifest files')
+    tfdata.add_argument('--no_model', action='store_true', default=False,
+                    help='Only iterate through data.')
+
+    tfdata.add_argument('--repeat_single_batch', dest='repeat_single_batch', action='store_true')
+    tfdata.add_argument('--sort_data', dest='sort_data', action='store_true')
+    tfdata.add_argument('--snapshot_path', help='Path to folder to put snapshots.')
+    tfdata.add_argument('--pipeline', nargs='+',
+                        help='Preprocessing ops: augment, snapshot in the input pipeline.', default=[],
+                        choices=['augment', 'snapshot'])
+    tfdata.add_argument('--val_pipeline', nargs='+',
+                        help='Preprocessing ops: augment, snapshot in the input pipeline.', default=[],
+                        choices=['augment', 'snapshot'])
+    tfdata.add_argument("--service_ip", type=str, default=None, help="TF data service dispatcher IP.")
+    tfdata.add_argument('--caching_period', help='Caching period. 0 for no caching, -1 for cache once and reuse.',
+                        type=int, default=0)
+    tfdata.add_argument('--val_caching_period', help='Caching period. 0 for no caching, -1 for cache once and reuse.',
+                        type=int, default=0)
     return parser.parse_args()
 
 
@@ -155,8 +172,7 @@ def apply_ema(model, ema_model, decay):
 
 @torch.no_grad()
 def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
-             ema_model, loss_fn, greedy_decoder, use_amp, use_tf_data):
-
+             ema_model, loss_fn, greedy_decoder, use_amp, use_tf_data, no_model):
     ema_model.eval()
 
     start_time = time.time()
@@ -175,7 +191,7 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
 
         log_probs, log_prob_lens = ema_model(feats, feat_lens, txt, txt_lens)
         loss = loss_fn(log_probs[:, :log_prob_lens.max().item()],
-                                  log_prob_lens, txt, txt_lens)
+                       log_prob_lens, txt, txt_lens)
 
         pred = greedy_decoder.decode(ema_model, feats, feat_lens)
 
@@ -192,8 +208,10 @@ def evaluate(epoch, step, val_loader, val_feat_proc, detokenize,
     ema_model.train()
     return wer
 
+
 def tf_to_torch(tensor):
     return torch.from_numpy(tensor.numpy())
+
 
 def main():
     logging.configure_logger('RNNT')
@@ -201,7 +219,7 @@ def main():
 
     args = parse_args()
 
-    assert(torch.cuda.is_available())
+    assert (torch.cuda.is_available())
     assert args.prediction_frequency is None or args.prediction_frequency % args.log_frequency == 0
 
     torch.backends.cudnn.benchmark = args.cudnn_benchmark
@@ -209,10 +227,13 @@ def main():
     # set up distributed training
     multi_gpu = int(os.environ.get('WORLD_SIZE', 1)) > 1
     if multi_gpu:
-        torch.cuda.set_device(args.local_rank)
-        dist.init_process_group(backend='nccl', init_method='env://')
-        world_size = dist.get_world_size()
-        print_once(f'Distributed training with {world_size} GPUs\n')
+        if not args.tf_data:
+            torch.cuda.set_device(args.local_rank)
+            dist.init_process_group(backend='nccl', init_method='env://')
+            world_size = dist.get_world_size()
+            print_once(f'Distributed training with {world_size} GPUs\n')
+        else:
+            world_size = 1
     else:
         world_size = 1
 
@@ -236,8 +257,8 @@ def main():
 
     logging.log_event(logging.constants.SUBMISSION_BENCHMARK, value=logging.constants.RNNT)
     logging.log_event(logging.constants.SUBMISSION_ORG, value='my-organization')
-    logging.log_event(logging.constants.SUBMISSION_DIVISION, value=logging.constants.CLOSED) # closed or open
-    logging.log_event(logging.constants.SUBMISSION_STATUS, value=logging.constants.ONPREM) # on-prem/cloud/research
+    logging.log_event(logging.constants.SUBMISSION_DIVISION, value=logging.constants.CLOSED)  # closed or open
+    logging.log_event(logging.constants.SUBMISSION_STATUS, value=logging.constants.ONPREM)  # on-prem/cloud/research
     logging.log_event(logging.constants.SUBMISSION_PLATFORM, value='my platform')
 
     logging.log_end(logging.constants.INIT_STOP)
@@ -288,40 +309,54 @@ def main():
     class PermuteAudio(torch.nn.Module):
         def forward(self, x):
             return (x[0].permute(2, 0, 1), *x[1:])
+
     if args.tf_data:
-        train_dataset = TfDataset(pipeline=['augment'], caching_period=0,
-                                 dataset_path=args.dataset_dir,
-                                 manifests_paths=args.tf_train_manifests,
-                                 tokenizer=tokenizer,
-                                 config_data=train_dataset_kw,
-                                 config_features=train_features_kw,
-                                 batch_size=batch_size,
-                                 # grad_accumulation_steps=args.grad_accumulation_steps,
-                                 )
+        train_dataset = TfDataset(pipeline=args.pipeline,
+                                  dataset_path=args.dataset_dir,
+                                  manifests_paths=args.tf_train_manifests,
+                                  tokenizer=tokenizer,
+                                  config_data=train_dataset_kw,
+                                  config_features=train_features_kw,
+                                  batch_size=batch_size,
+                                  wav=True,
+                                  repeat_single_batch=args.repeat_single_batch,
+                                  snapshot_path=args.snapshot_path,
+                                  service_ip=args.service_ip,
+                                  caching_period=args.caching_period,
+                                  sort=args.sort_data
+                                  # grad_accumulation_steps=args.grad_accumulation_steps,
+                                  )
         train_loader = train_dataset.create_tf_dataset()
-        val_dataset = TfDataset(pipeline=[], caching_period=0,
-                               dataset_path=args.dataset_dir,
-                               manifests_paths=args.tf_val_manifests,
-                               tokenizer=tokenizer,
-                               config_data=train_dataset_kw,
-                               config_features=train_features_kw,
-                               batch_size=batch_size,
-                               # grad_accumulation_steps=args.grad_accumulation_steps,
-                               )
+        val_dataset = TfDataset(pipeline=args.val_pipeline,
+                                dataset_path=args.dataset_dir,
+                                manifests_paths=args.tf_val_manifests,
+                                tokenizer=tokenizer,
+                                config_data=train_dataset_kw,
+                                config_features=train_features_kw,
+                                batch_size=batch_size,
+                                wav=True,
+                                repeat_single_batch=args.repeat_single_batch,
+                                snapshot_path=args.snapshot_path,
+                                service_ip=args.service_ip,
+                                caching_period=args.val_caching_period,
+                                sort=args.sort_data,
+                                # grad_accumulation_steps=args.grad_accumulation_steps,
+                                )
         val_loader = val_dataset.create_tf_dataset()
-        train_feat_proc = PermuteAudio()
-        val_feat_proc   = PermuteAudio()
+        train_feat_proc = torch.nn.Identity()
+        val_feat_proc = torch.nn.Identity()
     else:
         train_augmentations = torch.nn.Sequential(
-            train_specaugm_kw and features.SpecAugment(optim_level=args.amp, **train_specaugm_kw) or torch.nn.Identity(),
+            train_specaugm_kw and features.SpecAugment(optim_level=args.amp,
+                                                       **train_specaugm_kw) or torch.nn.Identity(),
             features.FrameSplicing(optim_level=args.amp, **train_splicing_kw),
             PermuteAudio(),
-            )
+        )
         val_augmentations = torch.nn.Sequential(
             val_specaugm_kw and features.SpecAugment(optim_level=args.amp, **val_specaugm_kw) or torch.nn.Identity(),
             features.FrameSplicing(optim_level=args.amp, **val_splicing_kw),
             PermuteAudio(),
-            )
+        )
 
         logging.log_event(logging.constants.DATA_TRAIN_NUM_BUCKETS, value=args.num_buckets)
 
@@ -360,11 +395,10 @@ def main():
                                     tokenizer=tokenizer)
 
         train_feat_proc = train_augmentations
-        val_feat_proc   = val_augmentations
+        val_feat_proc = val_augmentations
 
     train_feat_proc.cuda()
     val_feat_proc.cuda()
-
 
     steps_per_epoch = len(train_loader) // args.grad_accumulation_steps
 
@@ -387,12 +421,12 @@ def main():
     blank_idx = tokenizer.num_labels
     loss_fn = RNNTLoss(blank_idx=blank_idx)
     logging.log_event(logging.constants.EVAL_MAX_PREDICTION_SYMBOLS, value=args.max_symbol_per_sample)
-    greedy_decoder = RNNTGreedyDecoder( blank_idx=blank_idx,
-                                        max_symbol_per_sample=args.max_symbol_per_sample)
+    greedy_decoder = RNNTGreedyDecoder(blank_idx=blank_idx,
+                                       max_symbol_per_sample=args.max_symbol_per_sample)
 
-    print_once(f'Model size: {num_weights(model) / 10**6:.1f}M params\n')
+    print_once(f'Model size: {num_weights(model) / 10 ** 6:.1f}M params\n')
 
-    opt_eps=1e-9
+    opt_eps = 1e-9
     logging.log_event(logging.constants.OPT_NAME, value='lamb')
     logging.log_event(logging.constants.OPT_BASE_LR, value=args.lr)
     logging.log_event(logging.constants.OPT_LAMB_EPSILON, value=opt_eps)
@@ -434,14 +468,13 @@ def main():
         ema_model = None
     logging.log_event(logging.constants.MODEL_EVAL_EMA_FACTOR, value=args.ema)
 
+    if args.tf_data:
+        model = torch.nn.DataParallel(model)
     if multi_gpu:
-        if args.tf_data:
-            model = torch.nn.DataParallel(model)
-        else:
-            model = DistributedDataParallel(model)
+        model = DistributedDataParallel(model)
 
     # load checkpoint
-    meta = {'best_wer': 10**6, 'start_epoch': 0}
+    meta = {'best_wer': 10 ** 6, 'start_epoch': 0}
     checkpointer = Checkpointer(args.output_dir, 'RNN-T',
                                 args.keep_milestones, args.amp)
     if args.resume:
@@ -482,10 +515,10 @@ def main():
 
             audio, audio_lens, txt, txt_lens = batch
             if args.tf_data:
-                audio = tf_to_torch(audio).cuda()
-                txt = tf_to_torch(txt).cuda()
-                audio_lens = tf_to_torch(audio_lens).cuda()
-                txt_lens = tf_to_torch(txt_lens).cuda()
+                audio = tf_to_torch(audio)
+                txt = tf_to_torch(txt)
+                audio_lens = tf_to_torch(audio_lens)
+                txt_lens = tf_to_torch(txt_lens)
 
             # Audio: [BATCH_SIZE, NUM_FEATURES (80), MAX_LEN]
             # Text: [BATCH_SIZE, MAX_LEN_TEXT]
@@ -494,9 +527,15 @@ def main():
             # print(audio_lens)
             # print(tokenizer.detokenize(txt[0][:txt_lens[0]].cpu().numpy().tolist()))
             feats, feat_lens = train_feat_proc([audio, audio_lens])
+            # feats, feat_lens = audio, audio_lens
             # print(feats.shape, feat_lens.shape, txt.shape, txt_lens.shape)
             all_feat_lens += feat_lens
 
+            if args.no_model:
+                B, F, T = feats.shape
+                # assert(B == batch_size / 4), f"Batch dim wrong: {B}"
+                assert(F == 240), f"Features dim wrong: {F}, text: {tokenizer.detokenize(txt[0][:txt_lens[0]].cpu().numpy().tolist())}"
+                # continue
             log_probs, log_prob_lens = model(feats, feat_lens, txt, txt_lens)
             loss = loss_fn(log_probs[:, :log_prob_lens.max().item()],
                            log_prob_lens, txt, txt_lens)
@@ -541,10 +580,10 @@ def main():
                     if args.prediction_frequency is None or step % args.prediction_frequency == 0:
                         preds = greedy_decoder.decode(model, feats, feat_lens)
                         wer, pred_utt, ref = greedy_wer(
-                                preds,
-                                txt,
-                                txt_lens,
-                                tokenizer.detokenize)
+                            preds,
+                            txt,
+                            txt_lens,
+                            tokenizer.detokenize)
                         print_once(f'  Decoded:   {pred_utt[:90]}')
                         print_once(f'  Reference: {ref[:90]}')
                         wer = {'wer': 100 * wer}
@@ -580,7 +619,7 @@ def main():
         if epoch % args.val_frequency == 0:
             wer = evaluate(epoch, step, val_loader, val_feat_proc,
                            tokenizer.detokenize, ema_model, loss_fn,
-                           greedy_decoder, args.amp, args.tf_data)
+                           greedy_decoder, args.amp, args.tf_data, args.no_model)
 
             last_wer = wer
             if wer < best_wer and epoch >= args.save_best_from:
@@ -589,7 +628,7 @@ def main():
                 best_wer = wer
 
         save_this_epoch = (args.save_frequency is not None and epoch % args.save_frequency == 0) \
-                       or (epoch in args.keep_milestones)
+                          or (epoch in args.keep_milestones)
         if save_this_epoch:
             checkpointer.save(model, ema_model, optimizer, epoch, step, best_wer)
 
@@ -611,7 +650,7 @@ def main():
 
     if epoch == args.epochs:
         evaluate(epoch, step, val_loader, val_feat_proc, tokenizer.detokenize,
-                 ema_model, loss_fn, greedy_decoder, args.amp)
+                 ema_model, loss_fn, greedy_decoder, args.amp, args.tf_data, args.no_model)
 
     flush_log()
     if args.save_at_the_end:
