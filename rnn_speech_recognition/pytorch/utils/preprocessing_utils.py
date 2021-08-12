@@ -24,7 +24,7 @@ import sox
 from tqdm import tqdm
 
 def preprocess(data, input_dir, dest_dir, target_sr=None, speed=None,
-               overwrite=True):
+               overwrite=True, no_wav=False):
     speed = speed or []
     speed.append(1)
     speed = list(set(speed))  # Make uniqe
@@ -48,7 +48,7 @@ def preprocess(data, input_dir, dest_dir, target_sr=None, speed=None,
                                     data['input_relpath'],
                                     output_fname)
 
-        if not os.path.exists(output_fpath) or overwrite:
+        if (not os.path.exists(output_fpath) or overwrite) and not no_wav:
             cbn = sox.Transformer().speed(factor=s).convert(target_sr)
             cbn.build(input_fname, output_fpath)
 
@@ -67,10 +67,10 @@ def preprocess(data, input_dir, dest_dir, target_sr=None, speed=None,
     return output_dict
 
 
-def parallel_preprocess(dataset, input_dir, dest_dir, target_sr, speed, overwrite, parallel):
+def parallel_preprocess(dataset, input_dir, dest_dir, target_sr, speed, overwrite, parallel, no_wav):
     with multiprocessing.Pool(parallel) as p:
         func = functools.partial(preprocess,
             input_dir=input_dir, dest_dir=dest_dir,
-            target_sr=target_sr, speed=speed, overwrite=overwrite)
+            target_sr=target_sr, speed=speed, overwrite=overwrite, no_wav=no_wav)
         dataset = list(tqdm(p.imap(func, dataset), total=len(dataset)))
         return dataset

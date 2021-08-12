@@ -38,6 +38,8 @@ parser.add_argument('--target_sr', type=int, default=None,
                          'defaults to the input sample rate')
 parser.add_argument('--overwrite', action='store_true',
                     help='Overwrite file if exists')
+parser.add_argument('--no_wav', action='store_true',
+                    help='Dont generate wavs')
 parser.add_argument('--parallel', type=int, default=multiprocessing.cpu_count(),
                     help='Number of threads to use when processing audio files')
 args = parser.parse_args()
@@ -63,6 +65,7 @@ def build_input_arr(input_dir):
 print("[%s] Scaning input dir..." % args.output_json)
 dataset = build_input_arr(input_dir=args.input_dir)
 
+print(args.no_wav)
 print("[%s] Converting audio files..." % args.output_json)
 dataset = parallel_preprocess(dataset=dataset,
                               input_dir=args.input_dir,
@@ -70,7 +73,9 @@ dataset = parallel_preprocess(dataset=dataset,
                               target_sr=args.target_sr,
                               speed=args.speed,
                               overwrite=args.overwrite,
-                              parallel=args.parallel)
+                              parallel=args.parallel,
+                              no_wav=args.no_wav,
+                              )
 
 print("[%s] Generating json..." % args.output_json)
 df = pd.DataFrame(dataset, dtype=object)
