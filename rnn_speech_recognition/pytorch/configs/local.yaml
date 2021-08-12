@@ -17,9 +17,9 @@
 #
 
 tokenizer:
-    sentpiece_model: /home/julia/lab/ml_input_processing/experiments/ml/specaugment/mlcommons/training/rnn_speech_recognition/pytorch/librispeech1023.model
-    labels: [" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
-             "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "'"]
+  sentpiece_model: /home/julia/lab/ml_input_processing/experiments/ml/specaugment/mlcommons/training/rnn_speech_recognition/pytorch/librispeech1023.model
+  labels: [" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+           "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "'"]
 
 input_val:
   audio_dataset: &val_dataset
@@ -46,9 +46,9 @@ input_train:
     <<: *val_dataset
     max_duration: 16.7
     speed_perturbation:
-        min_rate: 0.85
-        max_rate: 1.15
-        p: 1.0
+      min_rate: 0.85
+      max_rate: 1.15
+      p: 1.0
 
   filterbank_features: *val_features
   frame_splicing: *val_splicing
@@ -64,17 +64,17 @@ input_train:
 rnnt:
   in_feats: 240  # n_filt x frame_stacking
 
-  enc_n_hid: 1024
-  enc_pre_rnn_layers: 2
-  enc_post_rnn_layers: 3
-  enc_stack_time_factor: 2
+  enc_n_hid: 8
+  enc_pre_rnn_layers: 1
+  enc_post_rnn_layers: 1
+  enc_stack_time_factor: 1
   enc_dropout: 0.1
 
-  pred_n_hid: 512
-  pred_rnn_layers: 2
+  pred_n_hid: 8
+  pred_rnn_layers: 1
   pred_dropout: 0.3
 
-  joint_n_hid: 512
+  joint_n_hid: 8
   joint_dropout: 0.3
 
   forget_gate_bias: 1.0

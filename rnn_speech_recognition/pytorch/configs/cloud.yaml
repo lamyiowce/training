@@ -17,9 +17,9 @@
 #
 
 tokenizer:
-    sentpiece_model: /home/julia/lab/ml_input_processing/experiments/ml/specaugment/mlcommons/training/rnn_speech_recognition/pytorch/librispeech1023.model
-    labels: [" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
-             "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "'"]
+  sentpiece_model: /home/julia/ml_input_processing/experiments/ml/specaugment/mlcommons/training/rnn_speech_recognition/pytorch/librispeech1023.model
+  labels: [" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+           "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "'"]
 
 input_val:
   audio_dataset: &val_dataset
@@ -46,9 +46,9 @@ input_train:
     <<: *val_dataset
     max_duration: 16.7
     speed_perturbation:
-        min_rate: 0.85
-        max_rate: 1.15
-        p: 1.0
+      min_rate: 0.85
+      max_rate: 1.15
+      p: 1.0
 
   filterbank_features: *val_features
   frame_splicing: *val_splicing
