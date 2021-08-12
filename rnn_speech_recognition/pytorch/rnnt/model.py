@@ -102,7 +102,7 @@ class RNNT(nn.Module):
 
         self.encoder = torch.nn.ModuleDict(enc_mod)
 
-        pred_embed = torch.nn.Embedding(n_classes - 1, pred_n_hid)
+        pred_embed = torch.nn.Embedding(n_classes, pred_n_hid)
         logging.log_event(logging.constants.WEIGHTS_INITIALIZATION,
                           metadata=dict(tensor='pred_embed'))
 
@@ -140,6 +140,7 @@ class RNNT(nn.Module):
 
     def forward(self, x, x_lens, y, y_lens, state=None):
         # x: (B, channels, features, seq_len)
+        x = x.permute([2, 0, 1])
         y = label_collate(y)
 
         f, x_lens = self.encode(x, x_lens)

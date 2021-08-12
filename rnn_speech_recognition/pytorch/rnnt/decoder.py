@@ -68,6 +68,7 @@ class RNNTGreedyDecoder:
             list containing batch number of sentences (strings).
         """
         model = getattr(model, 'module', model)
+        x = x.permute([2, 0, 1])
         with torch.no_grad():
             # Apply optional preprocessing
 
