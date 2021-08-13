@@ -19,7 +19,7 @@ import tensorflow as tf
 from experiments.ml.specaugment.mlcommons.training.rnn_speech_recognition.pytorch.common.data.text import Tokenizer
 from experiments.ml.specaugment.mlcommons.training.rnn_speech_recognition.pytorch.tf_utils import melscale, dbscale, \
     stack_subsample_frames
-from experiments.ml.specaugment.specaugment import spec_augment
+from experiments.ml.specaugment.transformer.specaugment import spec_augment
 
 
 def add_periodic_caching(dataset, period, snapshot_path):
